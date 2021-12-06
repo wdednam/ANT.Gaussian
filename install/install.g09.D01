@@ -279,7 +279,7 @@ C ANT BEGIN modification
 C
 C         Perform the conductance calculation at end of scf (1000)
 C
-      call ANT (.NOT.RHF,1000,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,
+      call ANT (.NOT.RHF,1000,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,
      $                IRwS,IRwEig,Acurcy,Crit,.true.,NBasis)
 C
 C ANT END modification
@@ -330,8 +330,8 @@ C ANT BEGIN modification
 C
 C         Call ANT before SCF begins for initialization (Cycle "0")
 C
-      IF(jcycle.eq.1) call ANT (UHF,0,IRwH,IRwPA,IRwPB,IRwFA,
-     $                IRwFB,IRwS1,IRwEig,Acurcy,Crit,ANTOn,NBasis)
+      IF(jcycle.eq.1) call ANT (UHF,0,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,
+     $            IRwFB,IRwS1,IRwEig,Acurcy,Crit,ANTOn,NBasis)
 C
 C ANT END modification
 C
@@ -356,7 +356,7 @@ C ANT BEGIN modification
 C
 C         Call ANT for evaluating density matrix
 C
-      call ANT (UHF,JCycle,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,
+      call ANT (UHF,JCycle,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,
      $                IRwS1,IRwEig,Acurcy,Crit,ANTOn,NBasis)
 
       if(ANTOn) DIIS=.false.

@@ -65,7 +65,7 @@
   
 
   ! *************************
-  ! Trace of a complex matrix
+  ! Trace of a real matrix
   ! *************************
   REAL*8 FUNCTION RTrace( RMat )
     USE constants, ONLY: d_zero

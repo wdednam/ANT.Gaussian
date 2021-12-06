@@ -29,13 +29,13 @@
 !*     03690 Alicante (SPAIN)                             *
 !*                                                        *
 !**********************************************************
-  SUBROUTINE ANT (UHF,JCycle,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig,denerrj,Crit,ANTOn,NBasis)
+  SUBROUTINE ANT (UHF,JCycle,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig,denerrj,Crit,ANTOn,NBasis)
 !**********************************************************************************************************************
 !* Interface subroutine with Gaussian                                                                                 *
 !**********************************************************************************************************************
   USE Parameters, ONLY: SL, SwOffSPL, alpha, Read_Parameters, Write_Parameters, NSpinLock, npulay
   USE Parameters, ONLY: ChargeAcc,ChargeA,FermiAcc,FermiA,PAcc,PA,FullAcc,RedTransmB,RedTransmE,ElType,LDOS_Beg,LDOS_End
-  USE Parameters, ONLY: Mulliken, Hamilton, PFix, DFTU, FMixing, SOC, ROT
+  USE Parameters, ONLY: Mulliken, Hamilton, PFix, DFTU, FMixing, SOC, ROT, HFEnergy
   USE constants, ONLY: Hart
   USE preproc
   USE OneDLead, only: CleanUp1DLead 
@@ -55,35 +55,35 @@
   ! dummy arguments
   LOGICAL, INTENT(in)      :: UHF          
   REAL*8,INTENT(in)        :: denerrj, Crit
-  INTEGER, INTENT(in)    :: NBasis,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig
+  INTEGER, INTENT(in)    :: NBasis,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig
   INTEGER, INTENT(inout) :: JCycle
   LOGICAL,INTENT(inout)    :: ANTOn
   LOGICAL :: ADDP
   LOGICAL, SAVE :: FInit
 
   ! local variables
-  REAL*8    :: val, density, fock, exspin, norma
-  INTEGER :: ic, ndim, i, j, info, ii, jj, ispin, acount, AllocErr, ios ,k, iatom, jatom, ntot
+  REAL*8    :: val, density, fock, exspin, norma, ENR
+  INTEGER :: ic, ndim, i, j, info, ii, jj, ispin, acount, AllocErr, ios ,k, iatom, jatom, ntot, NBas6D, isym, jsym, ipa, ipb, icja, icjb, iv
   INTEGER, DIMENSION(MaxAtm) :: NAO
 
   CHARACTER(len=50), SAVE :: densitymatrix, fockmatrix
 
   INTEGER, SAVE :: isw, NCycLeadsOn, NSpin
-  INTEGER, SAVE :: ntt, len
+  INTEGER, SAVE :: ntt, ntt6d, len
   INTEGER, PARAMETER :: zero=0, two=2, one=1
 
-  REAL*8, DIMENSION(:),ALLOCATABLE   :: TS
+  REAL*8, DIMENSION(:),ALLOCATABLE   :: TS, V
   REAL*8, DIMENSION(:,:),ALLOCATABLE :: S
 
   !
   ! Matrices in lower trinagular form (alpha and beta) 
   ! for communication with gaussian
   !
-  REAL*8, DIMENSION(:,:),ALLOCATABLE,SAVE ::  MT 
+  REAL*8, DIMENSION(:,:),ALLOCATABLE,SAVE ::  MT, CT, TT, PT, PA, PB, CJA, CJB
   !
   ! Fock and density matrices in regular form
   !
-  REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE :: F, D
+  REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE :: F, D, HC, HT, PF
   REAL*8, DIMENSION(:,:,:,:),ALLOCATABLE,SAVE ::  DD
   REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE ::  DDD
   REAL*8, DIMENSION(npulay+1,npulay+1) ::  b
@@ -100,6 +100,8 @@
      NSpin = 1
      IF(UHF) NSpin = 2
      ntt = (NBasis*(NBasis+1))/2
+     Call GetNB6(NBas6D)
+     ntt6d = (NBas6D*(NBas6D+1))/2
      
      ANTOn = .FALSE.
           
@@ -220,6 +222,18 @@
         DD=0.0
         DDD=0.0
      end if
+     if( HFEnergy )then
+        ALLOCATE( CT( NSpin, ntt ), TT( NSpin, ntt ), PT( NSpin, ntt ), STAT=AllocErr )
+        IF( AllocErr /= 0 ) THEN
+           PRINT *, "ESF/Error: could not allocate memory for CT(:), TT(:), PT(:)"
+           STOP
+        END IF
+        ALLOCATE( HC(NSpin,NBasis,NBasis), HT(NSpin,NBasis,NBasis), PF(NSpin,NBasis,NBasis), STAT=AllocErr )
+        IF( AllocErr /= 0 ) THEN
+           PRINT *, "ESF/Error: could not allocate memory for HC(:,:,:), HT(:,:,:), PF(:,:,:)"
+           STOP
+        END IF        
+     end if     
 
      !
      ! Obtain overlap matrix in lower triangular form
@@ -397,6 +411,21 @@
   WRITE(ifu_log,*) '-------------------------------------------------------------------------'
   WRITE(ifu_log,*) 'Computing the density matrix at cycle:', JCycle
   WRITE(ifu_log,*) '-------------------------------------------------------------------------'
+  
+  ! Obtain core and kinetic Hamiltonians from Gaussian RWF if Hartree Fock
+  IF(HFEnergy) THEN
+    CALL FileIO(two,-IRwH,ntt,CT(1,:),zero)
+    IF(UHF) THEN
+      CALL FileIO(two,IRwH,ntt,CT(2,:),zero)  
+    END IF
+    !CALL FileIO(two,-IRwTM,ntt,TT(1,:),zero)
+    !IF(UHF) THEN
+    !  CALL FileIO(two,-IRwTM,ntt,TT(2,:),zero)  
+    !END IF
+    CALL FileIO(two,-IRwPA,ntt,PT(1,:),zero)
+    IF(UHF) CALL FileIO(two,-IRwPB,ntt,PT(2,:),zero)        
+    CALL FileIO(two,-IRwGen,one,ENR,40)
+  END IF    
 
   ! Obtain Fock matrix from Gaussian RWF
   CALL FileIO(two,-IRwFA,ntt,MT(1,:),zero)
@@ -415,9 +444,25 @@
         ! Mixing with old Fock matrix if fmix<1
         F(1,i,j)=(1.0d0-fmix)*F(1,i,j)+fmix*Hart*MT(1,acount)
         F(1,j,i)=F(1,i,j)
+        IF(HFEnergy) THEN 
+          HC(1,i,j)=CT(1,acount)
+          HC(1,j,i)=HC(1,i,j)
+          !HT(1,i,j)=TT(1,acount)
+          !HT(1,j,i)=HT(1,i,j)          
+          PF(1,i,j)=PT(1,acount)
+          PF(1,j,i)=PF(1,i,j)                    
+        ENDIF  
         IF (UHF) THEN
            F(2,i,j)=(1.0d0-fmix)*F(2,i,j)+fmix*Hart*MT(2,acount)
            F(2,j,i)=F(2,i,j)
+           IF(HFEnergy) THEN 
+             HC(2,i,j)=CT(2,acount)
+             HC(2,j,i)=HC(2,i,j)
+             !HT(2,i,j)=TT(1,acount)
+             !HT(2,j,i)=HT(2,i,j)          
+             PF(2,i,j)=PT(2,acount)
+             PF(2,j,i)=PF(2,i,j)               
+           ENDIF             
         ENDIF
         acount = acount +1
      ENDDO
@@ -464,7 +509,7 @@
   IF(MOD(NCycLeadsOn-1,20) == 0 .and. NCycLeadsOn > 21) CALL SwitchOnChargeCntr
     
   ! Call subroutine that solves transport problem
-  CALL Transport(F,ADDP)
+  CALL Transport(F,HC,HT,PF,ENR,ADDP)
   
    if (ElType(1) == "1DLEAD" .and. ElType(2) == "1DLEAD") THEN
        IF(MOD(NCycLeadsOn-1,10) == 0 .and. NCycLeadsOn >= 6) THEN
@@ -657,6 +702,13 @@
         PRINT *, "ESF/Deallocation error for MT(:,:),F(:,:,:)"
         STOP
      END IF
+     IF(HFEnergy) THEN
+       DEALLOCATE( CT, TT, HC, HT, PT, STAT=AllocErr )
+       IF( AllocErr /= 0 ) THEN
+          PRINT *, "ESF/Deallocation error for CT(:,:),TT(:,:,:),HC(:,:),HT(:,:,:)"
+          STOP
+       END IF     
+     ENDIF
      if(.not.FMixing)then
         DEALLOCATE( D, DD, DDD, STAT=AllocErr )
      IF( AllocErr /= 0 ) THEN

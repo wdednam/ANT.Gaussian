@@ -69,7 +69,7 @@
   complex*16, dimension(:,:),allocatable :: SPH
   
   ! *** Hamiltonian and density matrix of device
-  real*8, dimension(:,:,:),allocatable :: HD
+  real*8, dimension(:,:,:),allocatable :: HD, HDC, HDT  
   real*8, dimension(:,:,:),allocatable :: PD
   complex*16, dimension(:,:,:),allocatable :: PDOUT
   complex*16, dimension(:,:),allocatable :: H_SOC, PD_SOC,PD_SOC_R,PD_SOC_A
@@ -254,7 +254,7 @@
   subroutine InitDevice( NBasis, UHF, S )
     use constants, only: d_zero
     use numeric, only: RMatPow
-    use parameters, only: ElType, FermiStart, Overlap, HybFunc, SOC, biasvoltage, ANT1DInp, NEmbed
+    use parameters, only: ElType, FermiStart, Overlap, HybFunc, SOC, biasvoltage, ANT1DInp, NEmbed, HFEnergy
     use cluster, only: AnalyseCluster, AnalyseClusterElectrodeOne, AnalyseClusterElectrodeTwo, NAOAtom, NEmbedBL
 #ifdef G03ROOT
     use g03Common, only: GetNAtoms, GetAtmChg
@@ -298,6 +298,13 @@
        print *, "DEVICE/Allocation error for SD, InvSD, SMH, SPH, H, P"
        stop
     end if
+    IF (HFEnergy) then
+      allocate( HDC(NSpin,NAOrbs,NAOrbs), HDT(NSpin,NAOrbs,NAOrbs),  STAT=AllocErr )
+      if( AllocErr /= 0 ) then
+         print *, "DEVICE/Allocation error for core and kinetic Hamiltonians"
+         stop
+      end if     
+    END IF
 
     SD = S
     call RMatPow( SD, -1.0d0, InvSD )
@@ -666,7 +673,7 @@
   subroutine CleanUpDevice
     use BetheLattice, only: CleanUpBL, LeadBL
     use OneDLead, only: CleanUp1DLead
-    use parameters, only: ElType
+    use parameters, only: ElType, HFEnergy
     integer :: AllocErr, LeadNo
 
     deallocate( SD, InvSD, HD, PD, PDOUT, SPH, STAT=AllocErr )
@@ -674,6 +681,13 @@
        print *, "DEVICE/Deallocation error for SD, InvSD, HD, PD, PDOUT, SPH"
        stop
     end if
+    IF (HFEnergy) THEN
+       deallocate( HDC, HDT, STAT=AllocErr )
+       if( AllocErr /= 0 ) then
+          print *, "DEVICE/Deallocation error for HDC, HDT"
+          stop
+       end if    
+    END IF
     do LeadNo=1,2
        select case( ElType(LeadNo) )
        case( "BETHE" )
@@ -722,10 +736,10 @@
   !***************************
   !* Solve transport problem *
   !***************************
-  subroutine Transport(F,ADDP) 
+  subroutine Transport(F,HC,HT,PF,ENR,ADDP) 
     use parameters, only: RedTransmB, RedTransmE, ANT1DInp, ElType, HybFunc, POrtho, DFTU, DiagCorrBl, DMImag, LDOS_Beg, LDOS_End, &
-                          NSpinEdit, SpinEdit, SOC, ROT, PrtHatom, UPlus
-    use numeric, only: RMatPow, RSDiag
+                          NSpinEdit, SpinEdit, SOC, ROT, PrtHatom, UPlus, HFEnergy
+    use numeric, only: RMatPow, RSDiag, RTrace
     use cluster, only: LoAOrbNo, HiAOrbNo
     use correlation
     use orthogonalization
@@ -739,15 +753,23 @@
     implicit none
 
     logical,intent(out) :: ADDP
-    real*8, dimension(NSpin,NAOrbs,NAOrbs),intent(in) :: F
+    real*8, dimension(NSpin,NAOrbs,NAOrbs),intent(in) :: F, HC, HT, PF
+    real*8, intent(in) :: ENR
+    real*8, dimension(NSpin,NAOrbs,NAOrbs) :: HCMOD, HTMOD, PHF
+    real*8, dimension(NSpin,NAOrbs) :: HCEIG, HTEIG
 
     real*8, dimension(NAOrbs) :: evals
     real*8, dimension(:,:),allocatable :: SPM
 
-    real*8 :: diff !!,TrP,QD
+    real*8 :: diff, IntHFE, InteractE, IntHFE1, IntHFE2, IntTE, IntHFE1A, IntHFE2A, IntHFE1B, IntHFE2B  !!,TrP,QD
     integer :: i,j,is, info, AllocErr, iatom, jatom, Atom
 
     HD = F
+    
+    IF (HFEnergy) THEN
+      HDC = HC
+      !HDT = HT
+    END IF  
     
     !Initializing 1D electrodes everytime we pass a SCF cycle 
    !IF (ElType(1) == "1DLEAD" .and. ELType(2) == "1DLEAD" .and. ChargeCntr) call InitElectrodes
@@ -799,7 +821,7 @@
        if (UPlus > 0.0) call Mol_Sub(HD,SD,PD,shift)
        
        if( POrtho )then
-          allocate( OD(NAorbs,NAOrbs), STAT=AllocErr )
+          allocate( OD(NAOrbs,NAOrbs), STAT=AllocErr )
           if( AllocErr /= 0 ) then
              print *, "DEVICE/InitDevice: Allocation error for OD(:,:)"
              stop
@@ -823,6 +845,105 @@
        IF (ElType(1) /= "GHOST" .and. ElType(2) /= "GHOST") THEN            
           IF( RedTransmE >= RedTransmB  ) call EigenChannelAnalysis
           call transmission
+       END IF
+       IF(HFEnergy) THEN  
+         IF (NAOrbs > GetNAtoms()) THEN
+         
+            PHF = PF
+            HCMOD = HDC
+            !HTMOD = HDT
+            !IntHFE = 0.0d0
+            !IntTE = 0.0d0
+
+            call RSDiag( HCMOD(1,:,:), HCEIG(1,:) , info )
+            if( info /= 0 )then
+               print*, "Error diagonalizing up-up core Hamiltonian matrix: info=", info
+               return
+            end if         
+            !call RSDiag( HTMOD(1,:,:), HTEIG(1,:) , info )
+            !if( info /= 0 )then
+            !   print*, "Error diagonalizing up-up core Hamiltonian matrix: info=", info
+            !   return
+            !end if                
+            IF (NSpin==2) THEN 
+               call RSDiag( HCMOD(2,:,:), HCEIG(2,:), info )
+               if( info /= 0 )then
+                  print*, "Error diagonalizing down-down core Hamiltonian matrix: info=", info
+                  return
+               end if
+               !call RSDiag( HTMOD(2,:,:), HTEIG(2,:), info )
+               !if( info /= 0 )then
+               !   print*, "Error diagonalizing down-down core Hamiltonian matrix: info=", info
+               !   return
+               !end if               
+            END IF
+            do ispin=1,NSpin
+               do i=1,NAOrbs
+                  do j=1,NAOrbs        
+                     IF (i==j) THEN
+                       HDC(ispin,i,j) = HCEIG(ispin,i)
+                       !HDT(ispin,i,j) = HTEIG(ispin,i)
+                     ELSE 
+                       HDC(ispin,i,j) = 0.d0
+                       !HDT(ispin,i,j) = 0.d0
+                     END IF 
+                  enddo
+               enddo
+            end do
+
+         END IF   
+         
+         IntHFE1A = 0.5d0*RTrace(MATMUL(HDC(1,:,:),PF(1,:,:)))
+         IntHFE1B = 0.5d0*RTrace(MATMUL(HDC(2,:,:),PF(2,:,:)))
+         IntHFE2A = 0.5d0*RTrace(MATMUL(F(1,:,:),PF(1,:,:)))
+         IntHFE2B = 0.5d0*RTrace(MATMUL(F(2,:,:),PF(2,:,:)))                 
+         
+         
+         !do ispin=1,NSpin
+         !   do i=1,NAOrbs
+         !      do j=1,NAOrbs        
+         !         IntHFE1 = IntHFE1 + 0.5d0*PD(ispin,i,j)*(HDC(ispin,j,i)+F(ispin,j,i))
+         !         IntHFE2 = IntHFE2 + PD(ispin,i,j)*HDC(ispin,j,i)+0.5d0*PD(ispin,i,j)*(F(ispin,j,i)-HDC(ispin,j,i))
+         !         !IntTE = IntTE + 0.5d0*PD(ispin,i,j)*HDT(ispin,j,i)
+         !      enddo
+         !   enddo
+         !end do         
+         
+         !Atom = PrtHatom
+	     !
+         !   do iAtom=1,GetNAtoms()
+         !      do jAtom=1,GetNAtoms()
+         !         !if( SpinEdit(iAtom) == -1 .and. SpinEdit(jAtom) == -1 )then
+         !         if( iAtom == Atom .and. jAtom == Atom )then
+         !            PRINT *, " Core Hamiltonian of atom ",iAtom," is: "
+         !            PRINT *, " Up-Up "  
+         !            do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                               
+         !               PRINT '(1000(F11.5))', ( (HFD(1,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )               
+         !            end do
+         !            if (NSpin == 2) then                                                                                                       
+         !              PRINT *, " Down-Down "                                                                              
+         !              do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                            
+         !                 PRINT '(1000(F11.5))', ( (HFD(2,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )             
+         !              end do                                                                              
+         !            end if  
+         !         end if   
+         !      end do
+         !   end do          
+         
+         !IntHFE = IntHFEnergy(shift)
+         !InteractE = 0.5d0*InteractEnergy(shift)
+         
+         !write(ifu_log,'(A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
+         !write(ifu_log,'(A,F24.12,A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1+ENR, ' or ',  IntHFE2+ENR   !IntHFE+InteractE+ENR, ' or ',  IntHFE1+ENR   
+         !write(ifu_log,'(A,F24.12)') ' Hartree-Fock kinetic energy is: ', IntTE
+         write(ifu_log,'(A)') ' Hartree-Fock energy breakdown: '
+         write(ifu_log,'(A,F24.12)') ' ENR =     ', ENR
+         write(ifu_log,'(A,F24.12)') ' E1A =     ', IntHFE1A
+         write(ifu_log,'(A,F24.12)') ' E1B =     ', IntHFE1B
+         write(ifu_log,'(A,F24.12)') ' EJ =      ', IntHFE2A+IntHFE2B
+         write(ifu_log,'(A,F24.12)') ' ETotal =  ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
+         
+         
        END IF
        
        !
@@ -1612,7 +1733,7 @@
            if( x(i) > 0.5d0 ) Ei = 0.5d0*EMax/(1.0d0-x(i))
            dEdx = 2.0d0*EMax
            if( x(i) > 0.5d0 ) dEdx = 0.5d0*EMax/(1.0d0-x(i))**2   
-           call GPlus0( ui*Ei, GD )
+           call gplus0( ui*Ei, GD )
 !$OMP CRITICAL
            do k=1,NAOrbs
               do l=1,NAOrbs
@@ -1689,6 +1810,56 @@
     call zgetri(NAOrbs,green,NAOrbs,ipiv,work,4*NAOrbs,info)
 
   end subroutine gplus0
+  
+  !*************************************
+  !* Compute retarded Green's function *
+  !*************************************
+  subroutine gplusHF0(z,green)
+    use PARAMETERS, only: eta,glue
+    use constants, only: c_zero, ui
+#ifdef PGI
+    use lapack_blas, only: zgetri, zgetrf
+#endif 
+    implicit none
+    external zgetrf, zgetri    
+
+    integer :: i, j, info, omp_get_thread_num
+    integer, dimension(NAOrbs) :: ipiv
+    complex*16, dimension(NAOrbs,NAOrbs) :: sigl,sigr, temp 
+    complex*16 :: work(4*NAOrbs) 
+
+    complex*16, intent(in) :: z 
+
+    complex*16, dimension(NAOrbs,NAOrbs), intent(out) :: green
+    
+
+    ! Initilization 
+    green=c_zero
+    sigr=-ui*eta*SD 
+    sigl=-ui*eta*SD 
+
+    call CompSelfEnergies( ispin, z, sigl, sigr, 1 )
+    sigr=glue*sigr
+    sigl=glue*sigl
+    
+   !print*,'selfenergy right'
+   !print*,sigr(1,1),sigr(1,2),sigr(2,1)
+   !print*,'selfenergy left'
+   !print*,sigl(1,1),sigl(1,2),sigl(2,1)
+   !print*,'..........'
+    !************************************************************************
+    !c Retarded "Green" function
+    !************************************************************************
+    do i=1,NAOrbs
+       do j=1,NAOrbs
+          green(i,j)=(z-shift)*SD(i,j)-HDC(ispin,i,j)-sigl(i,j)-sigr(i,j)
+       enddo
+    enddo
+
+    call zgetrf(NAOrbs,NAOrbs,green,NAOrbs,ipiv,info)
+    call zgetri(NAOrbs,green,NAOrbs,ipiv,work,4*NAOrbs,info)
+
+  end subroutine gplusHF0  
 
 
   !********************************************************
@@ -3796,6 +3967,62 @@
     if(NSpin==1) TrGS = TrGS * 2.0d0
     DDOS = -DIMAG(R*(sin(phi)+ui*cos(phi))*TrGS)/d_pi 
   end function DDOS
+  
+  !
+  ! *** Integrand for charge integration on complex contour ***
+  !
+  real*8 function HFDOS( E0, R, phi )
+    use constants, only: c_zero, ui, d_pi
+
+    real*8, intent(in) :: phi, E0, R
+    integer :: i, j !!, ispin 
+    complex*16,dimension(NAOrbs,NAOrbs) :: green
+    complex*16 :: TrHF, z
+
+    z = E0 - R*(cos(phi) - ui*sin(phi)) 
+
+    TrHF=c_zero
+    do ispin=1,NSpin
+       call gplusHF0(z,green)
+       !do i=1,NAOrbs
+       do i=NCDAO1,NCDAO2
+          do j=1,NAOrbs
+             TrHF = TrHF + z*green(i,j)*SD(j,i)
+          end do
+       end do
+    end do
+    ! Account for spin degeneracy
+    if(NSpin==1) TrHF = TrHF * 2.0d0
+    HFDOS = -DIMAG(R*(sin(phi)+ui*cos(phi))*TrHF)/d_pi 
+  end function HFDOS  
+  
+  !
+  ! *** Integrand for charge integration on complex contour ***
+  !
+  real*8 function IADOS( E0, R, phi )
+    use constants, only: c_zero, ui, d_pi
+
+    real*8, intent(in) :: phi, E0, R
+    integer :: i, j !!, ispin 
+    complex*16,dimension(NAOrbs,NAOrbs) :: green
+    complex*16 :: TrIA, z
+
+    z = E0 - R*(cos(phi) - ui*sin(phi)) 
+
+    TrIA=c_zero
+    do ispin=1,NSpin
+       call gplus0(z,green)
+       !do i=1,NAOrbs
+       do i=NCDAO1,NCDAO2
+          do j=1,NAOrbs
+             TrIA = TrIA + z*green(i,j)*SD(j,i)
+          end do
+       end do
+    end do
+    ! Account for spin degeneracy
+    if(NSpin==1) TrIA = TrIA * 2.0d0
+    IADOS = -DIMAG(R*(sin(phi)+ui*cos(phi))*TrIA)/d_pi 
+  end function IADOS   
 
   ! 
   ! *** Total charge up to energy E, lower bound is EMin ***
@@ -3840,6 +4067,96 @@
 
     TotCharge = q
   end function TotCharge
+  
+  
+  ! 
+  ! *** Total internal energy of occupied states within the Hartree-Fock approximation ***
+  ! 
+  real*8 function IntHFEnergy( E )
+    use constants, only: d_zero, d_pi
+    use parameters, only: ChargeAcc, HFEnergy
+    use numeric, only: gauleg 
+    implicit none
+    
+    real*8, intent(in) :: E
+
+    integer, parameter :: nmax = 2047
+    
+    real*8 :: hfe,hfee, E0, R, w_j, phi_j
+    integer :: n, n1, n2, j, i
+    
+    real*8, dimension(nmax) :: x, w
+    
+    ! Integration contour parameters:
+    E0 = 0.5*(E + EMin)
+    R  = 0.5*(E - EMin)
+    ! Computing integral of DOS over 
+    ! complex contour using Gauss-Legendre 
+    ! quadrature
+    n=1
+    do  
+       hfe = d_zero
+       do j=1,n
+          call gauleg(d_zero,d_pi,x(1:n),w(1:n),n)
+          hfe = hfe + w(j)*HFDOS( E0, R, x(j) )
+       end do
+       if( n > 1 .and. (hfe == d_zero .or. abs(hfe-hfee) < E*ChargeAcc*NCDEl ) ) exit  
+       n=2*n+1
+       if( n > nmax )then
+          print '(A,I4,A)' , "IntHFEenergy/Gaussian quadrature has not converged after", nmax, " steps."
+          return
+       end if
+       hfee = hfe
+    end do
+    print '(A,I4,A,F10.5)', "IntHFEenergy/Gaussian quadrature has converged after", n, " steps. Error:", abs(hfe-hfee)
+
+    IntHFEnergy = hfe
+  end function IntHFEnergy  
+  
+  ! 
+  ! *** Total internal energy of occupied states within the Hartree-Fock approximation ***
+  ! 
+  real*8 function InteractEnergy( E )
+    use constants, only: d_zero, d_pi
+    use parameters, only: ChargeAcc, HFEnergy
+    use numeric, only: gauleg 
+    implicit none
+    
+    real*8, intent(in) :: E
+
+    integer, parameter :: nmax = 2047
+    
+    real*8 :: ie,iee, E0, R, w_j, phi_j
+    integer :: n, n1, n2, j, i
+    
+    real*8, dimension(nmax) :: x, w
+    
+    ! Integration contour parameters:
+    E0 = 0.5*(E + EMin)
+    R  = 0.5*(E - EMin)
+    ! Computing integral of DOS over 
+    ! complex contour using Gauss-Legendre 
+    ! quadrature
+    n=1
+    do  
+       ie = d_zero
+       do j=1,n
+          call gauleg(d_zero,d_pi,x(1:n),w(1:n),n)
+          ie = iee + w(j)*IADOS( E0, R, x(j) )
+       end do
+       if( n > 1 .and. (ie == d_zero .or. abs(ie-iee) < E*ChargeAcc*NCDEl ) ) exit  
+       n=2*n+1
+       if( n > nmax )then
+          print '(A,I4,A)' , "InteractEnergy/Gaussian quadrature has not converged after", nmax, " steps."
+          return
+       end if
+       iee = ie
+    end do
+    print '(A,I4,A,F10.5)', "InteractEnergy/Gaussian quadrature has converged after", n, " steps. Error:", abs(ie-iee)
+
+    InteractEnergy = ie
+  end function InteractEnergy    
+  
   
   ! *************************************                             
   !  Estimates upper/lower energy                                   

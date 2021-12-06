@@ -216,6 +216,10 @@
   CHARACTER(LEN=10), DIMENSION(2), PARAMETER :: NAtomEl_keyw = (/"NATOMEL1","NATOMEL2"/)
   INTEGER, DIMENSION(2) :: NAtomEL = (/0,0/)
 
+  ! Whether to use the core Hamiltonian to calculate the internal energy in Hartree-Fock
+  ! calculations
+  LOGICAL :: HFEnergy = .false.; CHARACTER(len=10), PARAMETER :: HFEnergy_keyw = "HFENERGY"
+
   ! Switch on Fock matrix mixing (instead of density matrix) for damping
   LOGICAL :: FMixing = .FALSE. ; CHARACTER(len=10), PARAMETER :: FMixing_keyw = "FMIXING"
    
@@ -672,6 +676,8 @@ CONTAINS
        rot = .true.               
     CASE ( SpinDel_keyw )
        SpinDel = .true.
+    CASE ( HFEnergy_keyw )
+       HFEnergy = .true.       
     CASE ( FMixing_keyw )
        FMixing = .true.
     CASE ( DMImag_keyw )
@@ -919,6 +925,7 @@ CONTAINS
     WRITE(unit=logfile,fmt=*) glue_keyw, " = ", glue
     WRITE(unit=logfile,fmt=*) FermiStart_keyw, " = ", FermiStart, " eV"
     WRITE(unit=logfile,fmt=*) SL_keyw, " = ", SL
+    WRITE(unit=logfile,fmt=*) HFEnergy_keyw, " = ", HFEnergy    
     WRITE(unit=logfile,fmt=*) DMImag_keyw, " = ", DMImag
     WRITE(unit=logfile,fmt=*) FMixing_keyw, " = ", FMixing
     WRITE(unit=logfile,fmt=*) "******************"

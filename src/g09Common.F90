@@ -299,6 +299,18 @@
       IMPLICIT NONE
       GetNBasis = NBasis
     END FUNCTION GetNBasis
+    
+    ! *************************
+    ! Need to allocate matrices
+    ! big enough for the 
+    ! Cartesian versions rather 
+    ! (based on NBas6D 
+    ! than NBasis)
+    ! *************************
+!    INTEGER FUNCTION GetNB6()
+!      IMPLICIT NONE
+!      GetNB6 = NBas6D
+!    END FUNCTION GetNB6    
 
     ! ************************
     ! Atomic number of atom ia
