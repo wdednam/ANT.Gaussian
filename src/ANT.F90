@@ -29,14 +29,15 @@
 !*     03690 Alicante (SPAIN)                             *
 !*                                                        *
 !**********************************************************
-  SUBROUTINE ANT (UHF,JCycle,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig,denerrj,Crit,ANTOn,NBasis)
+  SUBROUTINE ANT (UHF,JCycle,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig,denerrj,Crit,ANTOn,NBasis)
 !**********************************************************************************************************************
 !* Interface subroutine with Gaussian                                                                                 *
 !**********************************************************************************************************************
   USE Parameters, ONLY: SL, SwOffSPL, alpha, Read_Parameters, Write_Parameters, NSpinLock, npulay
   USE Parameters, ONLY: ChargeAcc,ChargeA,FermiAcc,FermiA,PAcc,PA,FullAcc,RedTransmB,RedTransmE,ElType,LDOS_Beg,LDOS_End
-  USE Parameters, ONLY: Mulliken, Hamilton, PFix, DFTU, FMixing, SOC, ROT
-  USE constants, ONLY: Hart
+  USE Parameters, ONLY: Mulliken, Hamilton, PFix, DFTU, FMixing, SOC, ROT, HFEnergy
+  USE constants, ONLY: Hart, d_zero
+  USE Numeric, ONLY: RTrace  
   USE preproc
   USE OneDLead, only: CleanUp1DLead 
   USE device, ONLY: InitDevice, DevFockMat, DevDensMat, ReadDensMat, LeadsOn, DevShift, SwitchOnLeads, &
@@ -46,7 +47,7 @@
   USE g03Common, ONLY: GetNShell, GetAtm4Sh, Get1stAO4Sh, GetNBasis, GetAN, GetAtmChg, GetAtmCo, GetNAtoms
 #endif
 #ifdef G09ROOT
-  USE g09Common, ONLY: GetNShell, GetAtm4Sh, Get1stAO4Sh, GetNBasis, GetAN, GetAtmChg, GetAtmCo, GetNAtoms
+  USE g09Common, ONLY: GetNShell, GetAtm4Sh, Get1stAO4Sh, GetNBasis, GetAN, GetAtmChg, GetAtmCo, GetNAtoms, GetAtTyp, GetNE, GetIChg, GetMultip  
 #endif
   use ANTCommon
   use util
@@ -55,35 +56,46 @@
   ! dummy arguments
   LOGICAL, INTENT(in)      :: UHF          
   REAL*8,INTENT(in)        :: denerrj, Crit
-  INTEGER, INTENT(in)    :: NBasis,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig
+  INTEGER, INTENT(in)    :: NBasis,IRwGen,IRwH,IRwPA,IRwPB,IRwFA,IRwFB,IRwS1,IRwEig
   INTEGER, INTENT(inout) :: JCycle
   LOGICAL,INTENT(inout)    :: ANTOn
   LOGICAL :: ADDP
   LOGICAL, SAVE :: FInit
 
   ! local variables
-  REAL*8    :: val, density, fock, exspin, norma
-  INTEGER :: ic, ndim, i, j, info, ii, jj, ispin, acount, AllocErr, ios ,k, iatom, jatom, ntot
-  INTEGER, DIMENSION(MaxAtm) :: NAO
+  REAL*8    :: val, density, fock, exspin, norma, ENR, E1A, E1B, Ex, Ec, EJ, ETot
+  INTEGER :: ic, ndim, i, j, info, ii, jj, ispin, acount, AllocErr, ios ,k, iatom, jatom, ntot, NAtoms, NBas6D, mdv, isym, jsym, ISCF, IROHF, &
+             ipa, ipb, icja, icjb, iv, mdv1, IPrint, IGrid, IHMeth, lseall, FMFlag, FMFlg1, IPFlag, NFxFlg, IOpCl, ICntrl, IExCor, IExchn, ICorr, &
+             AccDes, IPureD,IPureF, NOpUse , NBTI, ISym2E, IRadAn, IRanWt, IRanGd, NMtPBC, IJunk
+  INTEGER, DIMENSION(MaxAtm) :: NAO                                                                                    
 
   CHARACTER(len=50), SAVE :: densitymatrix, fockmatrix
 
   INTEGER, SAVE :: isw, NCycLeadsOn, NSpin
-  INTEGER, SAVE :: ntt, len
+  INTEGER, SAVE :: ntt, ntt6d, len
   INTEGER, PARAMETER :: zero=0, two=2, one=1
 
-  REAL*8, DIMENSION(:),ALLOCATABLE   :: TS
-  REAL*8, DIMENSION(:,:),ALLOCATABLE :: S
+  REAL*8, DIMENSION(:),ALLOCATABLE   :: TS, VV, PDA, PDB, CJA, CJB, IIAn, IIAtTyp, AAtmChg
+  LOGICAL, DIMENSION(50) ::  AllowP
+  LOGICAL ::  FMM, HaveDB, OKSym, AtBlock
+  REAL*8, DIMENSION(1), SAVE :: XX = 0.0d0
+  INTEGER, DIMENSION(1), SAVE :: JJJ = 0
+  LOGICAL, DIMENSION(1), SAVE :: LLJ = .False. 
+  REAL*8, DIMENSION(4) :: ScaDFX
+  REAL*8 :: ScaHFX, RJunk
+  REAL*8, DIMENSION(5,6) :: Omega 
+  INTEGER, DIMENSION(200) :: IOpArr
+  REAL*8, DIMENSION(:,:),ALLOCATABLE :: S, CC
 
   !
   ! Matrices in lower trinagular form (alpha and beta) 
   ! for communication with gaussian
   !
-  REAL*8, DIMENSION(:,:),ALLOCATABLE,SAVE ::  MT 
+  REAL*8, DIMENSION(:,:),ALLOCATABLE,SAVE ::  MT, CT
   !
   ! Fock and density matrices in regular form
   !
-  REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE :: F, D
+  REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE :: F, D, HC
   REAL*8, DIMENSION(:,:,:,:),ALLOCATABLE,SAVE ::  DD
   REAL*8, DIMENSION(:,:,:),ALLOCATABLE,SAVE ::  DDD
   REAL*8, DIMENSION(npulay+1,npulay+1) ::  b
@@ -91,7 +103,7 @@
   INTEGER, DIMENSION(npulay+1) ::  ipiv
 
   real*8 :: fmix
-
+  
   !*******************************************************************
   ! Before first cycle: Initialize module device, allocate memory etc 
   !*******************************************************************
@@ -100,6 +112,13 @@
      NSpin = 1
      IF(UHF) NSpin = 2
      ntt = (NBasis*(NBasis+1))/2
+     Call GetNB6(NBas6D)
+     ntt6d = (NBas6D*(NBas6D+1))/2
+     
+     ! Read IOp common block for later use
+     CALL FileIO(two,-996,200,IOpArr,zero)    
+     
+     !WRITE(ifu_log,'(200(I17))') IOpArr     
      
      ANTOn = .FALSE.
           
@@ -220,6 +239,19 @@
         DD=0.0
         DDD=0.0
      end if
+     if( HFEnergy )then  
+        ALLOCATE( CT( NSpin, ntt ), STAT=AllocErr )
+        IF( AllocErr /= 0 ) THEN
+           PRINT *, "ESF/Error: could not allocate memory for CT(:,:)"
+           STOP
+        END IF
+        ALLOCATE( HC(NSpin,NBasis,NBasis), STAT=AllocErr )
+        IF( AllocErr /= 0 ) THEN
+           PRINT *, "ESF/Error: could not allocate memory for HC(:,:,:)"
+           STOP
+        END IF
+        HC=0.0        
+     end if     
 
      !
      ! Obtain overlap matrix in lower triangular form
@@ -397,6 +429,236 @@
   WRITE(ifu_log,*) '-------------------------------------------------------------------------'
   WRITE(ifu_log,*) 'Computing the density matrix at cycle:', JCycle
   WRITE(ifu_log,*) '-------------------------------------------------------------------------'
+  
+  ! Calculate Total energy in open boundary Hartree-Fock calculations. See Example link program in Gaussian Programming reference
+  IF(HFEnergy .and. jcycle.EQ.1000 ) THEN 
+    
+    CALL execute_command_line('grep " MDV=  " *.log | cut -b61-79 > mdv.txt' ) 
+    OPEN(unit=10,file='mdv.txt') 
+    READ(10,*) mdv 
+    CLOSE(10)
+    CALL execute_command_line('rm -r mdv.txt')
+    
+    !print *, "MDV = ",mdv
+    
+    ALLOCATE( VV( mdv ), PDA (ntt6d), PDB(ntt6d), CJA (ntt6d), CJB(ntt6d), STAT=AllocErr )
+    IF( AllocErr /= 0 ) THEN
+       PRINT *, "ESF/Error: could not allocate memory for VV(:), PDA(:), PDB(:), CJA(:), CJB(:)"
+       STOP
+    END IF  
+    
+    NAtoms = GetNAtoms()    
+    
+    ALLOCATE( IIAn( NAtoms ), IIAtTyp(NAtoms), AAtmChg(NAtoms), CC(3,NAtoms), STAT=AllocErr )
+    IF( AllocErr /= 0 ) THEN
+       PRINT *, "ESF/Error: could not allocate memory for IIAn(:),IIAtTyp(:),AAtmChg(:),CC(:,:)"
+       STOP
+    END IF
+    
+    DO i=1,NAtoms
+         IIAn(i) = GetAN(i)
+         !Print *, "Atomic number of Atom ",i," is ", IIAn(i)
+         IIAtTyp(i) = GetAtTyp(i)
+         !Print *, "Atom type of Atom ",i," is ", IIAtTyp(i)
+         AAtmChg(i) = GetAtmChg(i)
+         !Print *, "Atomic charge of Atom ",i," is ", AAtmChg(i)
+         CC(1,i) = GetAtmCo(1,i)
+         CC(2,i) = GetAtmCo(2,i)
+         CC(3,i) = GetAtmCo(3,i)      
+         !Print *, "Coordinates of Atom ",i," are ", CC(1,i), CC(2,i), CC(3,i)
+    ENDDO    
+             
+    CALL GetNOp(isym,jsym)  
+    
+    CALL ILSW(two,one,IOpCl)
+    
+    ipa = 1
+    ipb = ipa + ntt6d
+    
+    !icja = ipb + ntt6d
+    !icjb = icja + ntt6d    
+    
+    !iv = icjb + 2*ntt6d
+    
+    iv = ipb + 2*ntt6d
+    
+    CALL TstCor(iv,mdv, 'ANT')
+    
+    mdv1 = mdv - iv + 1    
+
+    CALL ILSW(2,1,ISCF) 
+    CALL ILSW(2,22,IROHF)
+    
+    CALL FileIO(two,-IRwFA,ntt,VV(ipa),zero)
+    
+    IF (UHF) Call FileIO(two,-IRwFB,ntt,VV(ipb),zero) 
+       
+    
+    PDA = VV(ipa)
+    IF(UHF) PDB = VV(ipb)   
+    
+    !CALL ILSW(2,1,ISCF) 
+    !CALL ILSW(2,22,IROHF)
+    !
+    !CALL FileIO(two,-528,ntt,VV(ipa),zero)
+    !
+    !IF(ISCF.eq.0 .and. IROHF.eq.0) THEN
+    !   Call AScale(ntt,0.5d0,VV(ipa),VV(ipa)) 
+    !   Call AMove(ntt,VV(ipa),VV(ipa))
+    !ELSE
+    !   Call FileIO(two,-530,ntt,VV(ipb),zero) 
+    !ENDIF    
+    !
+    !PDA = VV(ipa)
+    !IF(UHF) PDB = VV(ipb)   
+    !
+    CALL FileIO(two,-501,one,ENR,40)   
+    !    
+    !CALL FileIO(two,-515,ntt,CJA,zero)
+    !
+    !IF(UHF) THEN
+    !  CALL FileIO(two,515,ntt,CJB,zero)
+    !END IF
+    !
+    !E1A = 0.0d0
+    !acount = 1
+    !DO i=1,NBasis
+    !   DO j=1,i
+    !      E1A=E1A+PDA(acount)*CJA(acount)
+    !      IF (UHF) THEN
+    !         E1B=E1B+PDB(acount)*CJB(acount)
+    !      ENDIF
+    !      acount = acount +1
+    !   ENDDO
+    !ENDDO    
+    !
+    !print *,"E1A = ", E1A
+    !IF (UHF) THEN 
+    !   print *,"E1B = ", E1B
+    !ENDIF   
+        
+    IPrint = IOpArr(33)
+    IGrid = IOpArr(90)
+    WRITE(ifu_log,'(A,I10,A)') ' Evaluate the HF functional using Xc grid ',IGrid,'.'    
+        
+    !CALL SetPFL(6,Iprint,zero,IPFlag,AllowP,FMM,FMFlag,FMFlg1,NFxFlg,IHMeth,Omega,one,lseall,iv,VV,mdv) 
+    
+    !WRITE(ifu_log,'(A,I10)') ' IPFLag is ', IPFLag
+    !WRITE(ifu_log,'(A,I10)') ' FMM is ', FMM
+    !WRITE(ifu_log,'(A,I10)') ' FMFlag is ', FMFlag
+    !WRITE(ifu_log,'(A,I10)') ' FMFlg1 is ', FMFlg1
+    !WRITE(ifu_log,'(A,I10)') ' NFxFlg is ', NFxFlg
+    !WRITE(ifu_log,'(A,I10)') ' Hamiltonian type is ', IHMeth
+    !WRITE(ifu_log,'(A,I10)') ' LSEALL is ', lseall
+    !WRITE(ifu_log,*) ' AllowP is ', AllowP        
+    !WRITE(ifu_log,*) ' Omega is ', Omega
+    
+    !mdv1 = mdv - iv + 1
+    
+    !HaveDB=IOpCl.eq.1
+    !CALL PurCar(6,IPrint, .False., .True., .False., .False., .False.,.False., .False. ,HaveDB, .True., &
+    !     NBasis,NBas6D,one,one,one,zero,zero,IPureD,IPureF,PDA,PDB,XX,XX,XX,XX,XX,XX,XX,VV(iv),mdv1)  
+         
+    
+    CALL execute_command_line('grep " ISym2E= " *.log | cut -b68-69 > isym2e.txt' ) 
+    OPEN(unit=10,file='isym2e.txt') 
+    READ(10,*) ISym2E
+    CLOSE(10)
+    CALL execute_command_line('rm -r isym2e.txt')  
+    
+    !print *, "ISym2E = ",ISym2E  
+    
+    OKSym = ISym2E.ne.0
+    AtBlock = .not. OKSym
+	
+    CALL XLSW(two, 11, 1, IExCor,RJunk)
+    CALL XLSW(two, 13, 1, IRadAn,RJunk)
+    CALL XLSW(two, 35, 1, IRanWt,RJunk)
+    CALL XLSW(two, 36, 1, IRanGd,RJunk)
+    CALL XLSW(two, 46, 1, IHMeth,RJunk)
+    CALL XLSW(two, 51, 1, NMtPBC,RJunk)  
+    CALL XLSW(two,1,2,IJunk,ScaDFX)
+    CALL XLSW(two,2,2,IJunk,ScaHFX)
+    CALL XLSW(two,3,2,IJunk,Omega)
+
+    WRITE(ifu_log,'(A,I10)') ' IExCor is ', IExCor
+    WRITE(ifu_log,'(A,I10)') ' IRadAn is ', IRadAn
+    WRITE(ifu_log,'(A,I10)') ' IRanWt is ', IRanWt
+    WRITE(ifu_log,'(A,I10)') ' IRanGd is ', IRanGd
+    WRITE(ifu_log,'(A,I10)') ' NMtPBC is ', NMtPBC
+    WRITE(ifu_log,'(A,I10)') ' Hamiltonian type is ', IHMeth
+    WRITE(ifu_log,*) ' ScaDFX is ', ScaDFX
+    WRITE(ifu_log,*) ' ScaHFX is ', ScaHFX
+    WRITE(ifu_log,*) ' Omega is ', Omega
+        
+    AccDes = 0.0d0
+    
+    CALL HarFok(6,IPrint,one,.true.,.false.,OKSym,AtBlock,&
+       .false.,IExCor,IRadAn,IRanWt,IRanGd,AccDes,IOpCl,.true.,NAtoms,&
+       NBasis,NBas6D,NBTI,GetIChg(),GetMultip(),GetNE(),IIAn,IIAtTyp,AAtmChg,CC,ScaDFX,&
+       NMtPBC,ETot,PDA,PDB,JJJ,XX,zero,JJJ,JJJ,XX,&
+       Omega,VV(iv),mdv1)    
+           
+    
+!    CALL ASet(4,1.0d0,ScaDFX)              
+!    
+!    IExChn = 2
+!    ICorr = 0
+!    ICntrl = 1
+!    AccDes = 0.0d0
+!    CALL CalDSu(6,IPrint,IPFlag,one,one,one,NAtoms, .False. ,Ex,Ec,JJ,XX,&
+!                XX,XX,XX,XX,XX,XX,XX,ICntrl,IExchn,ICorr,zero,IGrid,zero,zero,zero,ScaDFX,&
+!                CC,IIAn,IIAtTyp,AAtmChg,NAtoms,NAtoms,JJ,PDA,XX,XX,PDB,XX,XX,zero,XX,zero,&
+!                XX,NBas6D,IOpCl,AccDes, .False., .False. ,one,zero,one,one,one,JJJ,JJJ,JJJ,XX,JJJ, &
+!                 XX,GetNE(),zero,JJJ,JJJ,XX,XX,Omega,VV(iv),mdv1)                                  
+!                 
+!    ICntrl = 500
+!    NOpUse = one
+!    ScaHFX = 0.0d0
+!    NBTI = zero
+!    If(IOpCl.ne.zero) Call ASASB(ntt6d,0.5d0,PDA,0.5d0,PDB) 
+!    Call FoFJK(6,IPrint,IHMeth,zero,zero,ICntrl,Omega,zero,FMM,FMFlag, &
+!               FMFlg1,NFxFlg,IPFlag,AllowP,lseall,VV(lseall),one,NAtoms,.True., &
+!               .True., .False., .False., .False. ,zero,AccDes,ScaHFX,one,one,one,zero,one,zero,zero, &
+!                NBasis,zero,NOpUse,one,JJJ,JJJ,JJJ,XX,JJJ,NBTI,JJJ,PDA,PDB,XX,XX,XX,XX,XX, &
+!                XX,XX,JJJ,CJA,CJB,JJJ,XX,XX,NAtoms,IIAn,AAtmChg,CC,IIAtTyp,one,zero,XX,XX, &
+!                XX,JJJ,XX,RJunk,1.0d0,VV(iv),mdv1)
+!    
+!    EJ = 0.0d0
+!    ! Transform from lower trinagular form to regular form 
+!    acount = 1
+!    DO i=1,NBas6D
+!       DO j=1,i
+!          EJ=EJ+PDA(acount)*CJA(acount)
+!          acount = acount +1
+!       ENDDO
+!    ENDDO    
+        
+    !write(ifu_log,'(A)') ' Hartree-Fock energy breakdown: '
+    !write(ifu_log,'(A,F24.12)') ' ENR =     ', ENR
+    !write(ifu_log,'(A,F24.12)') ' E1A =     ', E1A
+    !write(ifu_log,'(A,F24.12)') ' E1B =     ', E1B
+    !write(ifu_log,'(A,F24.12)') ' Ex =      ', Ex
+    !write(ifu_log,'(A,F24.12)') ' Ec =      ', Ec    
+    !write(ifu_log,'(A,F24.12)') ' EJ =      ', EJ
+    !write(ifu_log,'(A,F24.12)') ' ETotal =  ', ENR+E1A+E1B+EJ
+    write(ifu_log,'(A,F24.12)') ' ETotal =  ', Etot      
+    
+    DEALLOCATE(VV, PDA, PDB, CJA, CJB, STAT=AllocErr )
+    IF( AllocErr /= 0 ) THEN
+       PRINT *, "ESF/Deallocation error for VV(:),PDA(:),PDB(:),CJA(:),CJB(:)"
+       STOP
+    END IF        
+    DEALLOCATE(IIAn, IIAtTyp, AAtmChg, CC, STAT=AllocErr )
+    IF( AllocErr /= 0 ) THEN
+       PRINT *, "ESF/Deallocation error for IIAn(:),IIAtTyp(:),AAtmChg(:),CC(:,:)"
+       STOP
+    END IF     
+    
+    CALL FileIO(two,-IRwH,ntt,CT(1,:),zero)
+    IF(UHF) CALL FileIO(two,IRwH,ntt,CT(2,:),zero)   
+         
+  END IF    
 
   ! Obtain Fock matrix from Gaussian RWF
   CALL FileIO(two,-IRwFA,ntt,MT(1,:),zero)
@@ -415,9 +677,17 @@
         ! Mixing with old Fock matrix if fmix<1
         F(1,i,j)=(1.0d0-fmix)*F(1,i,j)+fmix*Hart*MT(1,acount)
         F(1,j,i)=F(1,i,j)
+        IF(HFEnergy  .and. jcycle.EQ.1000 ) THEN 
+          HC(1,i,j)=CT(1,acount)
+          HC(1,j,i)=HC(1,i,j)                       
+        ENDIF  
         IF (UHF) THEN
            F(2,i,j)=(1.0d0-fmix)*F(2,i,j)+fmix*Hart*MT(2,acount)
            F(2,j,i)=F(2,i,j)
+           IF(HFEnergy  .and. jcycle.EQ.1000 ) THEN 
+             HC(2,i,j)=CT(2,acount)
+             HC(2,j,i)=HC(2,i,j)                   
+           ENDIF             
         ENDIF
         acount = acount +1
      ENDDO
@@ -464,7 +734,7 @@
   IF(MOD(NCycLeadsOn-1,20) == 0 .and. NCycLeadsOn > 21) CALL SwitchOnChargeCntr
     
   ! Call subroutine that solves transport problem
-  CALL Transport(F,ADDP)
+  CALL Transport(F,HC,ENR,JCYCLE,ADDP)
   
    if (ElType(1) == "1DLEAD" .and. ElType(2) == "1DLEAD") THEN
        IF(MOD(NCycLeadsOn-1,10) == 0 .and. NCycLeadsOn >= 6) THEN
@@ -657,6 +927,13 @@
         PRINT *, "ESF/Deallocation error for MT(:,:),F(:,:,:)"
         STOP
      END IF
+     IF(HFEnergy) THEN
+       DEALLOCATE( CT, HC, STAT=AllocErr )
+       IF( AllocErr /= 0 ) THEN
+          PRINT *, "ESF/Deallocation error for CT(:,:),HC(:,:,:)"
+          STOP
+       END IF     
+     ENDIF
      if(.not.FMixing)then
         DEALLOCATE( D, DD, DDD, STAT=AllocErr )
      IF( AllocErr /= 0 ) THEN
