@@ -39,7 +39,7 @@
       Common/B/ EXX(MaxPrm),C1(MaxPrm),C2(MaxPrm),C3(MaxPrm),X(MaxShl),&
         Y(MaxShl),Z(MaxShl),JAN(MaxShl),ShellA(MaxShl),ShellN(MaxShl),&
         ShellT(MaxShl),ShellC(MaxShl),AOS(MaxShl),JAnSav(MaxShl),&
-        RLam(MaxShl),RLamSv(MaxShl),NShell,MaxTyp,I5DB1,I7FB1
+        RLam(MaxShl),RLamSv(MaxShl),NShell,MaxTyp,I5DB1,I7FB1  
       Dimension C4(MaxShl),ShlADF(MaxShl)
       Equivalence (C4(1),C3(MaxSh1)),(ShlADF(1),C3(MaxS21))
 
@@ -76,7 +76,7 @@
         AtZEff(MaxAtm),AtQMom(MaxAtm),AtGFac(MaxAtm),IAtTpS(2,MaxTpS),&
         MicOpt(MaxAtm)
   
-  PUBLIC :: GetNAtoms, GetNAE, GetNBE, GetNE, GetNBasis, GetAN, GetAtmChg, GetAtmCo
+  PUBLIC :: GetNAtoms, GetNAE, GetNBE, GetNE, GetNBasis, GetAN, GetAtmChg, GetAtTyp, GetAtmCo, GetIChg, GetMultip 
 
   CONTAINS
 
@@ -300,17 +300,6 @@
       GetNBasis = NBasis
     END FUNCTION GetNBasis
     
-    ! *************************
-    ! Need to allocate matrices
-    ! big enough for the 
-    ! Cartesian versions rather 
-    ! (based on NBas6D 
-    ! than NBasis)
-    ! *************************
-!    INTEGER FUNCTION GetNB6()
-!      IMPLICIT NONE
-!      GetNB6 = NBas6D
-!    END FUNCTION GetNB6    
 
     ! ************************
     ! Atomic number of atom ia
@@ -320,6 +309,15 @@
       INTEGER, INTENT(in) :: ia
       GetAN = IAN(ia)
     END FUNCTION GetAN
+    
+    ! ********************
+    ! Atom type of atom ia
+    ! ********************
+    REAL*8 FUNCTION GetAtTyp( ia )
+      IMPLICIT NONE 
+      INTEGER, INTENT(in) :: ia
+      GetAtTyp = IAtTyp(ia)
+    END FUNCTION GetAtTyp    
 
     ! ****************************************
     ! Atom core charge = nuke + core electrons
@@ -338,5 +336,21 @@
       INTEGER, INTENT(in) :: j, ia
       GetAtmCo = C(j,ia)
     END FUNCTION GetAtmCo
+    
+    ! *****************************************
+    ! The total electric charge on the molecule
+    ! *****************************************
+    INTEGER FUNCTION GetIChg()
+      IMPLICIT NONE
+      GetIChg = ICharg
+    END FUNCTION GetIChg    
+    
+    ! ********************************
+    ! The molecule's spin multiplicity
+    ! ********************************
+    INTEGER FUNCTION GetMultip()
+      IMPLICIT NONE
+      GetMultip = Multip
+    END FUNCTION GetMultip     
 
   END MODULE G09Common

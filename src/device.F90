@@ -69,7 +69,7 @@
   complex*16, dimension(:,:),allocatable :: SPH
   
   ! *** Hamiltonian and density matrix of device
-  real*8, dimension(:,:,:),allocatable :: HD, HDC, HDT  
+  real*8, dimension(:,:,:),allocatable :: HD, HDC 
   real*8, dimension(:,:,:),allocatable :: PD
   complex*16, dimension(:,:,:),allocatable :: PDOUT
   complex*16, dimension(:,:),allocatable :: H_SOC, PD_SOC,PD_SOC_R,PD_SOC_A
@@ -299,9 +299,9 @@
        stop
     end if
     IF (HFEnergy) then
-      allocate( HDC(NSpin,NAOrbs,NAOrbs), HDT(NSpin,NAOrbs,NAOrbs),  STAT=AllocErr )
+      allocate( HDC(NSpin,NAOrbs,NAOrbs),  STAT=AllocErr )
       if( AllocErr /= 0 ) then
-         print *, "DEVICE/Allocation error for core and kinetic Hamiltonians"
+         print *, "DEVICE/Allocation error for core Hamiltonian"
          stop
       end if     
     END IF
@@ -682,9 +682,9 @@
        stop
     end if
     IF (HFEnergy) THEN
-       deallocate( HDC, HDT, STAT=AllocErr )
+       deallocate( HDC, STAT=AllocErr )
        if( AllocErr /= 0 ) then
-          print *, "DEVICE/Deallocation error for HDC, HDT"
+          print *, "DEVICE/Deallocation error for HDC"
           stop
        end if    
     END IF
@@ -736,7 +736,7 @@
   !***************************
   !* Solve transport problem *
   !***************************
-  subroutine Transport(F,HC,HT,PF,ENR,ADDP) 
+  subroutine Transport(F,HC,ENR,JCYCLE,ADDP) 
     use parameters, only: RedTransmB, RedTransmE, ANT1DInp, ElType, HybFunc, POrtho, DFTU, DiagCorrBl, DMImag, LDOS_Beg, LDOS_End, &
                           NSpinEdit, SpinEdit, SOC, ROT, PrtHatom, UPlus, HFEnergy
     use numeric, only: RMatPow, RSDiag, RTrace
@@ -753,10 +753,11 @@
     implicit none
 
     logical,intent(out) :: ADDP
-    real*8, dimension(NSpin,NAOrbs,NAOrbs),intent(in) :: F, HC, HT, PF
+    real*8, dimension(NSpin,NAOrbs,NAOrbs),intent(in) :: F, HC
     real*8, intent(in) :: ENR
-    real*8, dimension(NSpin,NAOrbs,NAOrbs) :: HCMOD, HTMOD, PHF
-    real*8, dimension(NSpin,NAOrbs) :: HCEIG, HTEIG
+    integer, intent(in) :: JCYCLE
+    real*8, dimension(NSpin,NAOrbs,NAOrbs) :: HCMOD
+    real*8, dimension(NSpin,NAOrbs) :: HCEIG
 
     real*8, dimension(NAOrbs) :: evals
     real*8, dimension(:,:),allocatable :: SPM
@@ -766,9 +767,8 @@
 
     HD = F
     
-    IF (HFEnergy) THEN
+    IF (HFEnergy .and. JCYCLE.EQ.1000) THEN
       HDC = HC
-      !HDT = HT
     END IF  
     
     !Initializing 1D electrodes everytime we pass a SCF cycle 
@@ -846,105 +846,90 @@
           IF( RedTransmE >= RedTransmB  ) call EigenChannelAnalysis
           call transmission
        END IF
-       IF(HFEnergy) THEN  
-         IF (NAOrbs > GetNAtoms()) THEN
-         
-            PHF = PF
-            HCMOD = HDC
-            !HTMOD = HDT
-            !IntHFE = 0.0d0
-            !IntTE = 0.0d0
-
-            call RSDiag( HCMOD(1,:,:), HCEIG(1,:) , info )
-            if( info /= 0 )then
-               print*, "Error diagonalizing up-up core Hamiltonian matrix: info=", info
-               return
-            end if         
-            !call RSDiag( HTMOD(1,:,:), HTEIG(1,:) , info )
-            !if( info /= 0 )then
-            !   print*, "Error diagonalizing up-up core Hamiltonian matrix: info=", info
-            !   return
-            !end if                
-            IF (NSpin==2) THEN 
-               call RSDiag( HCMOD(2,:,:), HCEIG(2,:), info )
-               if( info /= 0 )then
-                  print*, "Error diagonalizing down-down core Hamiltonian matrix: info=", info
-                  return
-               end if
-               !call RSDiag( HTMOD(2,:,:), HTEIG(2,:), info )
-               !if( info /= 0 )then
-               !   print*, "Error diagonalizing down-down core Hamiltonian matrix: info=", info
-               !   return
-               !end if               
-            END IF
-            do ispin=1,NSpin
-               do i=1,NAOrbs
-                  do j=1,NAOrbs        
-                     IF (i==j) THEN
-                       HDC(ispin,i,j) = HCEIG(ispin,i)
-                       !HDT(ispin,i,j) = HTEIG(ispin,i)
-                     ELSE 
-                       HDC(ispin,i,j) = 0.d0
-                       !HDT(ispin,i,j) = 0.d0
-                     END IF 
-                  enddo
-               enddo
-            end do
-
-         END IF   
-         
-         IntHFE1A = 0.5d0*RTrace(MATMUL(HDC(1,:,:),PF(1,:,:)))
-         IntHFE1B = 0.5d0*RTrace(MATMUL(HDC(2,:,:),PF(2,:,:)))
-         IntHFE2A = 0.5d0*RTrace(MATMUL(F(1,:,:),PF(1,:,:)))
-         IntHFE2B = 0.5d0*RTrace(MATMUL(F(2,:,:),PF(2,:,:)))                 
-         
-         
-         !do ispin=1,NSpin
-         !   do i=1,NAOrbs
-         !      do j=1,NAOrbs        
-         !         IntHFE1 = IntHFE1 + 0.5d0*PD(ispin,i,j)*(HDC(ispin,j,i)+F(ispin,j,i))
-         !         IntHFE2 = IntHFE2 + PD(ispin,i,j)*HDC(ispin,j,i)+0.5d0*PD(ispin,i,j)*(F(ispin,j,i)-HDC(ispin,j,i))
-         !         !IntTE = IntTE + 0.5d0*PD(ispin,i,j)*HDT(ispin,j,i)
-         !      enddo
-         !   enddo
-         !end do         
-         
-         !Atom = PrtHatom
-	     !
-         !   do iAtom=1,GetNAtoms()
-         !      do jAtom=1,GetNAtoms()
-         !         !if( SpinEdit(iAtom) == -1 .and. SpinEdit(jAtom) == -1 )then
-         !         if( iAtom == Atom .and. jAtom == Atom )then
-         !            PRINT *, " Core Hamiltonian of atom ",iAtom," is: "
-         !            PRINT *, " Up-Up "  
-         !            do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                               
-         !               PRINT '(1000(F11.5))', ( (HFD(1,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )               
-         !            end do
-         !            if (NSpin == 2) then                                                                                                       
-         !              PRINT *, " Down-Down "                                                                              
-         !              do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                            
-         !                 PRINT '(1000(F11.5))', ( (HFD(2,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )             
-         !              end do                                                                              
-         !            end if  
-         !         end if   
-         !      end do
-         !   end do          
-         
-         !IntHFE = IntHFEnergy(shift)
-         !InteractE = 0.5d0*InteractEnergy(shift)
-         
-         !write(ifu_log,'(A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
-         !write(ifu_log,'(A,F24.12,A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1+ENR, ' or ',  IntHFE2+ENR   !IntHFE+InteractE+ENR, ' or ',  IntHFE1+ENR   
-         !write(ifu_log,'(A,F24.12)') ' Hartree-Fock kinetic energy is: ', IntTE
-         write(ifu_log,'(A)') ' Hartree-Fock energy breakdown: '
-         write(ifu_log,'(A,F24.12)') ' ENR =     ', ENR
-         write(ifu_log,'(A,F24.12)') ' E1A =     ', IntHFE1A
-         write(ifu_log,'(A,F24.12)') ' E1B =     ', IntHFE1B
-         write(ifu_log,'(A,F24.12)') ' EJ =      ', IntHFE2A+IntHFE2B
-         write(ifu_log,'(A,F24.12)') ' ETotal =  ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
-         
-         
-       END IF
+       !IF(HFEnergy .and. JCYCLE.EQ.1000) THEN  
+       !  IF (NAOrbs > GetNAtoms()) THEN
+       !  
+       !     HCMOD = HDC
+       !     !IntHFE = 0.0d0
+       !     !IntTE = 0.0d0
+	   !
+       !     call RSDiag( HCMOD(1,:,:), HCEIG(1,:) , info )
+       !     if( info /= 0 )then
+       !        print*, "Error diagonalizing up-up core Hamiltonian matrix: info=", info
+       !        return
+       !     end if                   
+       !     IF (NSpin==2) THEN 
+       !        call RSDiag( HCMOD(2,:,:), HCEIG(2,:), info )
+       !        if( info /= 0 )then
+       !           print*, "Error diagonalizing down-down core Hamiltonian matrix: info=", info
+       !           return
+       !        end if           
+       !     END IF
+       !     do ispin=1,NSpin
+       !        do i=1,NAOrbs
+       !           do j=1,NAOrbs        
+       !              IF (i==j) THEN
+       !                HDC(ispin,i,j) = HCEIG(ispin,i)
+       !              ELSE 
+       !                HDC(ispin,i,j) = 0.d0
+       !              END IF 
+       !           enddo
+       !        enddo
+       !     end do
+	   !
+       !  END IF   
+       !  
+       !  IntHFE1A = 0.5d0*RTrace(MATMUL(HDC(1,:,:),PD(1,:,:)))
+       !  IntHFE1B = 0.5d0*RTrace(MATMUL(HDC(2,:,:),PD(2,:,:)))
+       !  IntHFE2A = 0.5d0*RTrace(MATMUL(F(1,:,:),PD(1,:,:)))
+       !  IntHFE2B = 0.5d0*RTrace(MATMUL(F(2,:,:),PD(2,:,:)))                 
+       !  
+       !  
+       !  !do ispin=1,NSpin
+       !  !   do i=1,NAOrbs
+       !  !      do j=1,NAOrbs        
+       !  !         IntHFE1 = IntHFE1 + 0.5d0*PD(ispin,i,j)*(HDC(ispin,j,i)+F(ispin,j,i))
+       !  !         IntHFE2 = IntHFE2 + PD(ispin,i,j)*HDC(ispin,j,i)+0.5d0*PD(ispin,i,j)*(F(ispin,j,i)-HDC(ispin,j,i))
+       !  !      enddo
+       !  !   enddo
+       !  !end do         
+       !  
+       !  !Atom = PrtHatom
+	   !  !
+       !  !   do iAtom=1,GetNAtoms()
+       !  !      do jAtom=1,GetNAtoms()
+       !  !         !if( SpinEdit(iAtom) == -1 .and. SpinEdit(jAtom) == -1 )then
+       !  !         if( iAtom == Atom .and. jAtom == Atom )then
+       !  !            PRINT *, " Core Hamiltonian of atom ",iAtom," is: "
+       !  !            PRINT *, " Up-Up "  
+       !  !            do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                               
+       !  !               PRINT '(1000(F11.5))', ( (HFD(1,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )               
+       !  !            end do
+       !  !            if (NSpin == 2) then                                                                                                       
+       !  !              PRINT *, " Down-Down "                                                                              
+       !  !              do i=LoAOrbNo(Atom),HiAOrbNo(Atom)                                                            
+       !  !                 PRINT '(1000(F11.5))', ( (HFD(2,i,j)), j=LoAOrbNo(Atom),HiAOrbNo(Atom) )             
+       !  !              end do                                                                              
+       !  !            end if  
+       !  !         end if   
+       !  !      end do
+       !  !   end do          
+       !  
+       !  !IntHFE = IntHFEnergy(shift)
+       !  !InteractE = 0.5d0*InteractEnergy(shift)
+       !  
+       !  !write(ifu_log,'(A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
+       !  !write(ifu_log,'(A,F24.12,A,F24.12)') ' Hartree-Fock internal energy is: ', IntHFE1+ENR, ' or ',  IntHFE2+ENR   !IntHFE+InteractE+ENR, ' or ',  IntHFE1+ENR   
+       !  !write(ifu_log,'(A,F24.12)') ' Hartree-Fock kinetic energy is: ', IntTE
+       !  write(ifu_log,'(A)') ' Hartree-Fock energy breakdown: '
+       !  write(ifu_log,'(A,F24.12)') ' ENR =     ', ENR
+       !  write(ifu_log,'(A,F24.12)') ' E1A =     ', IntHFE1A
+       !  write(ifu_log,'(A,F24.12)') ' E1B =     ', IntHFE1B
+       !  write(ifu_log,'(A,F24.12)') ' EJ =      ', IntHFE2A+IntHFE2B
+       !  write(ifu_log,'(A,F24.12)') ' ETotal =  ', IntHFE1A+IntHFE1B+IntHFE2A+IntHFE2B+ENR
+       !  
+       !  
+       !END IF
        
        !
        ! Print hamiltonian of atoms 
