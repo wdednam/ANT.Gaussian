@@ -1,0 +1,34 @@
+! ***************************
+! Sn Bethe Lattice parameters
+! ***************************
+!
+! ***********************************************************
+! *** Papacon TB parameters for valence minimal basis set ***
+! ***********************************************************
+!
+BEGINSET
+Papacon-2015
+4 1 4 0
+s
+p
+RYD
+ISPIN = 1
+!
+! On-site enrgies in Ryd
+!
+es =   -8.22749                 
+ep =   0.07822  
+!
+!
+sss =  -2.69973  
+sps =  2.05073                                      
+pps =  2.10817                     
+ppp =   -0.82931 
+! 
+! Overlap parameters
+! 
+S_sss =   0.24057                  
+S_sps =   -0.28144 
+S_pps =    -0.10456 
+S_ppp =     0.13737
+ENDSET
