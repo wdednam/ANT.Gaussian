@@ -123,61 +123,120 @@
   end subroutine RSetId
 
 
-  ! *************************************
-  ! Gauss-Legendre quadrature
-  ! - computes abscissas and weights for
-  !   Gaussian quadrature using Legendre
-  !   polynomials 
-  ! x1,x2 : real integration interval
-  ! x(n)  : array of abscissas            
-  ! w(n)  : array of weights
-  ! n     : number of abscissas
-  ! *************************************
-  SUBROUTINE gauleg(x1,x2,x,w,n)
-    USE constants, ONLY: d_one, d_zero 
+!  ! *************************************
+!  ! Gauss-Legendre quadrature
+!  ! - computes abscissas and weights for
+!  !   Gaussian quadrature using Legendre
+!  !   polynomials 
+!  ! x1,x2 : real integration interval
+!  ! x(n)  : array of abscissas            
+!  ! w(n)  : array of weights
+!  ! n     : number of abscissas
+!  ! *************************************
+!  SUBROUTINE gauleg(x1,x2,x,w,n)
+!    USE constants, ONLY: d_one, d_zero 
+!    IMPLICIT NONE
+!
+!    REAL*8, INTENT(in) :: x1, x2
+!    REAL*8, DIMENSION(n), INTENT(out) :: x, w
+!    INTEGER, INTENT(in) :: n
+!    
+!    REAL*8, PARAMETER :: EPS = 3.0d-14, Pi=4.0d0*ATAN(1.0)!Pi=3.141592654d0
+!    INTEGER :: i,j,m,ncycle
+!    REAL*8 :: p1,p2,p3,pp,xl,xm,z,z1
+!    
+!    ! number of roots to find (symmetric in interval)
+!    m=(n+1)/2        
+!    xm=0.5d0*(x2+x1) 
+!    xl=0.5d0*(x2-x1)
+!    ! loop over roots to find
+!    DO i=1,m 
+!       z=DCOS(Pi*(i-0.25d0)/(n+0.5d0)) ! starting value for i-th root
+!       DO ! loop to find i-th root
+!          p1 = d_one  
+!          p2 = d_zero 
+!          ! p1 will contain n-th Legendre polynomial evaluated at z, 
+!          ! p2 the polynomial of one lower order after the next loop 
+!          ! down the recurrence relation for generating Legendre polynomials 
+!          DO j=1,n    
+!             p3=p2
+!             p2=p1
+!             p1=((2.0d0*j-1.0d0)*z*p2-(j-1.0d0)*p3)/j
+!          END DO
+!          ! derivative of polynomial n at z
+!          pp=n*(z*p1-p2)/(z*z-1.0d0)
+!          z1=z
+!          z=z1-p1/pp
+!          ! convergence criterion
+!          IF(ABS(z-z1)<EPS)EXIT
+!       END DO 
+!       ! scale to interval (x1,x2)
+!       x(i)=xm-xl*z
+!       x(n+1-i)=xm+xl*z
+!       w(i)=2.0d0*xl/((1.0d0-z*z)*pp*pp)
+!       w(n+1-i)=w(i)
+!    END DO
+!  END SUBROUTINE gauleg
+
+! ***************************************
+! Gauss-Legendre quadrature
+! - computes abscissas and weights for
+!   Gaussian quadrature using Legendre
+!   polynomials
+! - Numerical recipes in Fortran Original 
+! x1,x2 : real integration interval
+! x(n)  : array of abscissas            
+! w(n)  : array of weights
+! n     : number of abscissas
+! ***************************************
+SUBROUTINE gauleg(x1, x2, x, w, n)
+    USE constants, ONLY: d_one, d_zero
     IMPLICIT NONE
 
     REAL*8, INTENT(in) :: x1, x2
     REAL*8, DIMENSION(n), INTENT(out) :: x, w
     INTEGER, INTENT(in) :: n
-    
-    REAL*8, PARAMETER :: EPS = 3.0d-14, Pi=4.0d0*ATAN(1.0)!Pi=3.141592654d0
-    INTEGER :: i,j,m,ncycle
-    REAL*8 :: p1,p2,p3,pp,xl,xm,z,z1
-    
-    ! number of roots to find (symmetric in interval)
-    m=(n+1)/2        
-    xm=0.5d0*(x2+x1) 
-    xl=0.5d0*(x2-x1)
-    ! loop over roots to find
-    DO i=1,m 
-       z=DCOS(Pi*(i-0.25d0)/(n+0.5d0)) ! starting value for i-th root
-       DO ! loop to find i-th root
-          p1 = d_one  
-          p2 = d_zero 
-          ! p1 will contain n-th Legendre polynomial evaluated at z, 
-          ! p2 the polynomial of one lower order after the next loop 
-          ! down the recurrence relation for generating Legendre polynomials 
-          DO j=1,n    
-             p3=p2
-             p2=p1
-             p1=((2.0d0*j-1.0d0)*z*p2-(j-1.0d0)*p3)/j
-          END DO
-          ! derivative of polynomial n at z
-          pp=n*(z*p1-p2)/(z*z-1.0d0)
-          z1=z
-          z=z1-p1/pp
-          ! convergence criterion
-          IF(ABS(z-z1)<EPS)EXIT
-       END DO 
-       ! scale to interval (x1,x2)
-       x(i)=xm-xl*z
-       x(n+1-i)=xm+xl*z
-       w(i)=2.0d0*xl/((1.0d0-z*z)*pp*pp)
-       w(n+1-i)=w(i)
+
+    REAL*8, PARAMETER :: EPS = 3.0d-14, Pi = 4.0d0 * ATAN(1.0)
+    INTEGER :: i, j, m
+    REAL*8 :: p1, p2, p3, pp, xl, xm, z, z1
+
+    ! Number of roots to find (symmetric in interval)
+    m = (n + 1) / 2
+    xm = 0.5d0 * (x2 + x1)
+    xl = 0.5d0 * (x2 - x1)
+
+    ! Loop over roots to find
+    DO i = 1, m
+        ! Initial guess for the i-th root
+        z = DCOS(Pi * (REAL(i) - 0.25d0) / (REAL(n) + 0.5d0))
+        DO
+            p1 = d_one
+            p2 = d_zero
+
+            ! Generate Legendre polynomial using recurrence relation
+            DO j = 1, n
+                p3 = p2
+                p2 = p1
+                p1 = ((2.0d0 * j - 1.0d0) * z * p2 - (j - 1.0d0) * p3) / j
+            END DO
+
+            ! Derivative of polynomial at z
+            pp = n * (z * p1 - p2) / (z * z - 1.0d0)
+            z1 = z
+            z = z1 - p1 / pp
+
+            ! Convergence criterion
+            IF (ABS(z - z1) < EPS) EXIT
+        END DO
+
+        ! Scale to interval (x1, x2)
+        x(i) = xm - xl * z
+        x(n + 1 - i) = xm + xl * z
+        w(i) = 2.0d0 * xl / ((1.0d0 - z * z) * pp * pp)
+        w(n + 1 - i) = w(i)
     END DO
-  END SUBROUTINE gauleg
-  
+END SUBROUTINE gauleg
 
   ! ************************
   ! Polynomial interpolation
