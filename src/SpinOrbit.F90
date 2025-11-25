@@ -44,12 +44,14 @@
 !*                                                       *
 !*********************************************************
 MODULE SpinOrbit
+  USE numeric, ONLY : gauleg
+  USE parameters, ONLY : PAcc
   IMPLICIT NONE
 
   PRIVATE
   
   REAL*8, DIMENSION(100000,2) :: matrix 
-  COMMON /array/ matrix 
+  COMMON /array/ matrix
   
   PUBLIC :: CompHSO 
   
@@ -343,9 +345,21 @@ CONTAINS
       END DO
           
   
-  END FUNCTION Rr  
+  END FUNCTION Rr
+
   
   !********************************************************************************************************************
+  
+  REAL*8 FUNCTION Integrand(r,rcut,Z,R1,R2) 
+    IMPLICIT NONE
+    
+      REAL*8, INTENT(IN) :: r ,rcut, R1, R2
+      INTEGER, INTENT(IN) :: Z 
+      
+      Integrand = R1*((DFLOAT(Z-1)*DEXP(-r*DLOG(DFLOAT(Z))/rcut)+1.0d0)/r)*R2 ! Modified Yukawa potential below atomic radius approximately   
+                
+      return
+  END FUNCTION Integrand  
      
 ! ---------------------------------------------------------
 !    Subroutine to evaluate integrals using
@@ -353,29 +367,31 @@ CONTAINS
 !    Handbook of mathematical formulas  
 !    and integrals by Alan Jeffrey      
 ! --------------------------------------------------------
-  
+
   SUBROUTINE INTEGRATE(func,A,B,ll,result,idx1,idx2)  ! Calculates the normalizations N_0 over CGTOs in Eq. (3) of  Beilstein J. Nanotechnol. 2018, 9, 1015-1023
       IMPLICIT REAL*8 (A-H,O-Y)
       IMPLICIT INTEGER (I,N)
-      DIMENSION XP(9999), WP(9999)
+      integer, parameter :: nmax = 511 !730
+      DIMENSION XP(nmax), WP(nmax)
       INTEGER :: idx1,idx2,ll
       REAL*8 :: result, SUM1
      
-      NQ = 730   ! NQ-1 MUST BE A MULTIPLE OF 9!!   
+      NQ = nmax !730   ! NQ-1 MUST BE A MULTIPLE OF 9!!   
       NL = 1
-      SUM1  = 0.0D0
-      dx = (B-A)/DFLOAT(NQ)
-      DO N = 1,NQ
-      SUM1 = SUM1 + dx
-      XP(N) = SUM1
-      END DO
+      !SUM1  = 0.0D0
+      !dx = (B-A)/DFLOAT(NQ)
+      !DO N = 1,NQ
+      !SUM1 = SUM1 + dx
+      !XP(N) = SUM1
+      !END DO
 
       !CALL SIMS(XP,NL,NQ,WP)
-      CALL BODE10PT(A,B,XP,WP,NQ)
-
+      !CALL BODE10PT(A,B,XP,WP,NQ)
+      CALL gauleg(A,B,XP,WP,NQ)
+      
       result = 0.0d0
       DO 12 N = 1,NQ
-       result = result + WP(N)*func(XP(N),ll,idx1,idx2)
+        result = result + WP(N)*func(XP(N),ll,idx1,idx2)
  12   CONTINUE
          
       RETURN
@@ -388,13 +404,14 @@ CONTAINS
 !    Handbook of mathematical formulas        
 !    and integrals by Alan Jeffrey            
 ! --------------------------------------------------------
-  
+
   SUBROUTINE INTEGRATE1(ii,jj,A,B,result,idx11,idx12,idx21,idx22,rcut,Z) ! Performs the integration in Eq. (5) of  Beilstein J. Nanotechnol. 2018, 9, 1015-1023
       IMPLICIT REAL*8 (A-H,O-Y)
       IMPLICIT INTEGER (I,N)
-      DIMENSION XP(9999), WP(9999)
+      integer, parameter :: nmax = 511 !730
+      DIMENSION XP(nmax), WP(nmax)
       INTEGER :: ii,jj,idx11,idx12,idx21,idx22,Z
-      REAL*8 :: result, SUM1, NormOrb1, NormOrb2, rcut, Yuk
+      REAL*8 :: result, SUM1, NormOrb1, NormOrb2, rcut, Yuk, Vr
      
       INTERFACE AFunc
        FUNCTION func (y,ll,i1,i2)
@@ -413,69 +430,65 @@ CONTAINS
       orb2 => Rr
       CALL integrate(R,A,B,jj,NormOrb2,idx21,idx22)
      
-      NQ = 730 ! NQ-1 MUST BE A MULTIPLE OF 9!!
+      NQ = nmax !730 ! NQ-1 MUST BE A MULTIPLE OF 9!!
       NL = 1
-      SUM1  = 0.0D0
-      dx = (B-A)/DFLOAT(NQ)
-      DO N = 1,NQ
-      SUM1 = SUM1 + dx
-      XP(N) = SUM1
-      END DO
+      !SUM1  = 0.0D0
+      !dx = (B-A)/DFLOAT(NQ)
+      !DO N = 1,NQ
+      !SUM1 = SUM1 + dx
+      !XP(N) = SUM1
+      !END DO
 
       !CALL SIMS(XP,NL,NQ,WP)
-      CALL BODE10PT(A,B,XP,WP,NQ)
+      !CALL BODE10PT(A,B,XP,WP,NQ)
+      CALL gauleg(A,B,XP,WP,NQ)
 
       result = 0.0d0
       DO 12 N = 1,NQ
-         IF (XP(N) < rcut) THEN 
-           Yuk = ((Z-1)*DEXP(-XP(N)*DLOG(DFLOAT(Z))/rcut)+1.0d0)/XP(N) ! Modified Yukawa potential below atomic radius approximately  
-           result = result + WP(N)*Yuk*orb1(XP(N),ii,idx11,idx12)*orb2(XP(N),jj,idx21,idx22)/sqrt(NormOrb1*NormOrb2) 
-         ELSE
-           result = result + WP(N)*(1.0/XP(N))*orb1(XP(N),ii,idx11,idx12)*orb2(XP(N),jj,idx21,idx22)/sqrt(NormOrb1*NormOrb2) ! Eq. (5) Beilstein J. Nanotechnol. 2018, 9, 1015-1023
-         END IF  
+         result = result + WP(N)*Integrand(XP(N),rcut,Z,orb1(XP(N),ii,idx11,idx12)/sqrt(NormOrb1),orb2(XP(N),jj,idx21,idx22)/sqrt(NormOrb2))
  12   CONTINUE
          
       RETURN
       END SUBROUTINE INTEGRATE1
       
-! -------------------------------------------------
-      SUBROUTINE BODE10PT(A,B,X,W,N)
-! -------------------------------------------------
-!     PREPARE POINTS X(N) AND WEIGHTS W(N) FOR
-!     INTEGRATION BY 10 POINT NEWTON-COTES RULE.
-!     SUBROUTINE WORKS WHEN N-1 IS A MULTIPLE OF 9
-! -------------------------------------------------
-      IMPLICIT DOUBLE PRECISION(A-H,O-Z)
-      IMPLICIT INTEGER (I,K,N)
-      DIMENSION  W(N),X(N)
-
-      IF ((N .LT. 10) .OR. (MOD((N-1),9) .NE. 0)) THEN
-      WRITE(*,*) ' ERROR IN SUBROUTINE SIMPSON. '
-      WRITE(*,*) ' N-1 MUST BE A MULTIPLE OF 9 '
-      STOP
-      END IF
-      W(1) = 0.0D0
-      X(1) = A
-      X(N) = B
-      H  = (B-A)/DFLOAT(N-1)
-      H1 = 9.0D0*H/89600.0D0
-      DO K = 2,N-1
-       X(K) = X(K-1) + H
-      END DO
-      DO K= 1,N-1,9
-      W(K)   =  2857.0D0*H1 + W(K)
-      W(K+1) = 15741.0D0*H1
-      W(K+2) =  1080.0D0*H1
-      W(K+3) = 19344.0D0*H1
-      W(K+4) =  5778.0D0*H1
-      W(K+5) =  5778.0D0*H1
-      W(K+6) = 19344.0D0*H1
-      W(K+7) =  1080.0D0*H1
-      W(K+8) = 15741.0D0*H1
-      W(K+9) =  2857.0D0*H1
-      END DO
-      END SUBROUTINE                  
-
+!! -------------------------------------------------
+!      SUBROUTINE BODE10PT(A,B,X,W,N)
+!! -------------------------------------------------
+!!     PREPARE POINTS X(N) AND WEIGHTS W(N) FOR
+!!     INTEGRATION BY 10 POINT NEWTON-COTES RULE.
+!!     SUBROUTINE WORKS WHEN N-1 IS A MULTIPLE OF 9
+!! -------------------------------------------------
+!      IMPLICIT DOUBLE PRECISION(A-H,O-Z)
+!      IMPLICIT INTEGER (I,K,N)
+!      DIMENSION  W(N),X(N)
+!
+!      IF ((N .LT. 10) .OR. (MOD((N-1),9) .NE. 0)) THEN
+!      WRITE(*,*) ' ERROR IN SUBROUTINE SIMPSON. '
+!      WRITE(*,*) ' N-1 MUST BE A MULTIPLE OF 9 '
+!      STOP
+!      END IF
+!      W(1) = 0.0D0
+!      X(1) = A
+!      X(N) = B
+!      H  = (B-A)/DFLOAT(N-1)
+!      H1 = 9.0D0*H/89600.0D0
+!      DO K = 2,N-1
+!       X(K) = X(K-1) + H
+!      END DO
+!      DO K= 1,N-1,9
+!      W(K)   =  2857.0D0*H1 + W(K)
+!      W(K+1) = 15741.0D0*H1
+!      W(K+2) =  1080.0D0*H1
+!      W(K+3) = 19344.0D0*H1
+!      W(K+4) =  5778.0D0*H1
+!      W(K+5) =  5778.0D0*H1
+!      W(K+6) = 19344.0D0*H1
+!      W(K+7) =  1080.0D0*H1
+!      W(K+8) = 15741.0D0*H1
+!      W(K+9) =  2857.0D0*H1
+!      END DO
+!      END SUBROUTINE                  
+!
 !! ===================================
 !      SUBROUTINE SIMS(XP,NL,NR,T)
 !! ===================================
@@ -530,7 +543,8 @@ CONTAINS
   !*** Compute matrix of SO Hamiltonian for a given basis set ***
   !**************************************************************
   SUBROUTINE CompHSO(hamil_SO,NAOs,Nshell)
-    USE parameters, ONLY: soc_cff_p, soc_cff_d, soc_cff_f, socfac_p, socfac_d, socfac_f, rcut, NSOCFacAtom, SOCFacAtomP, SOCFacAtomD, SOCFacAtomF, RCutAtom, NSOCEdit, SOCEditP, SOCEditD, SOCEditF
+    USE parameters, ONLY: soc_cff_p, soc_cff_d, soc_cff_f, socfac_p, socfac_d, socfac_f, rcut, NSOCFacAtom,  &
+                          SOCFacAtomP, SOCFacAtomD, SOCFacAtomF, RCutAtom, NSOCEdit, SOCEditP, SOCEditD, SOCEditF, PrtHatom
     USE G09common, ONLY : GetNAtoms, GetShellT, GetShellC, GetAtm4Sh, GetShellN, GetShellA, GetShlADF, GetEXX, GetC1, GetC2, GetC3, GetC4, GetAN, GetAtmCo
     USE cluster, ONLY : LoAOrbNo, HiAOrbNo
     USE constants
@@ -601,7 +615,7 @@ CONTAINS
     !  PRINT *, AOT(i)
     !END DO  
       
-    !PRINT *, "Basis set of each atom extracted from internal Gaussian variables:"
+    IF (PrtHatom > 1) PRINT *, "Basis set of atom ",PrtHatom," extracted from internal Gaussian variables:"
     DO i=1,NShell
        ShellT1 = GetShellT(i)
        ShellC1 = GetShellC(i)
@@ -617,25 +631,27 @@ CONTAINS
           IF ( ShellT1 == 0) THEN
               matrix(ShellAindex1+j-1,1)=GetEXX(ShellAindex1+j-1)
               matrix(ShellAindex1+j-1,2)=GetC1(ShellAindex1+j-1)   
-              !PRINT *,matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)              
+              If (AtomID1 == PrtHatom .and. PrtHatom > 1) PRINT '(2(F14.6))', matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)              
           ELSE IF ( ShellT1 == 1 .and. (ShellC1 == 0 .or. ShellC1 == 1)) THEN
               matrix(ShellAindex1+j-1,1)=GetEXX(ShellAindex1+j-1)
               matrix(ShellAindex1+j-1,2)=GetC2(ShellAindex1+j-1)
-              !PRINT *,matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)              
+              If (AtomID1 == PrtHatom .and. PrtHatom > 1) PRINT '(2(F14.6))',matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)              
           ELSE IF (ShellT1 == 2 .and. ShellC1 == 2) THEN
               matrix(ShellAindex1+j-1,1)=GetEXX(ShellAindex1+j-1)                         
               matrix(ShellAindex1+j-1,2)=GetC3(ShlADFindex1+j-1)                          
-              !PRINT *,matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)
+              If (AtomID1 == PrtHatom .and. PrtHatom > 1) PRINT '(2(F14.6))',matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)
           ELSE IF (ShellT1 == 3 .and. ShellC1 == 2) THEN       
               matrix(ShellAindex1+j-1,1)=GetEXX(ShellAindex1+j-1)                         
               matrix(ShellAindex1+j-1,2)=GetC4(ShlADFindex1+j-1)                          
-              !PRINT *,matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)          
+              If (AtomID1 == PrtHatom .and. PrtHatom > 1) PRINT '(2(F14.6))',matrix(ShellAindex1+j-1,1),matrix(ShellAindex1+j-1,2)          
           END IF                 
        END DO                                                 
-    END DO	 
+    END DO	  
     
-    A=1.0e-12/a0
-    B=1.0e-9/a0    
+    A=1.0e-16/a0
+    !PRINT *, "Lower limit A is: ", A
+    B=1.0e-09/a0    
+    !PRINT *, "Upper limit B is: ", B
     
     zz = (1.0/a0**3)*(hbar**2)*(Ke/e)*((e**2)/(2.*(me*c)**2)) ! Divide by e to convert from Joules to eV     
                 
@@ -679,14 +695,14 @@ CONTAINS
               END IF	               
               IF ((socfac_atom_p > 0.0d0 .or. socfac_atom_d > 0.0d0 .or. socfac_atom_f > 0.0d0) .or. (soc_cff_p_atom == 0.0d0 .and. soc_cff_d_atom == 0.0d0 .and. soc_cff_f_atom==0.0d0)) THEN                    
                   CALL integrate1(ShellT1,ShellT2,A,B,result,ShellAindex1,ShellAindex1+ShellNPrim1-1,ShellAindex2,ShellAindex2+ShellNPrim2-1,rcut_atom,Z)                
-                  IF (ShellT1 == 1 .and. ShellT2 == 1) Xi(i,k) = socfac_atom_p*zz*result       
-                  IF (ShellT1 == 2 .and. ShellT2 == 2) Xi(i,k) = socfac_atom_d*zz*result       
-                  IF (ShellT1 == 3 .and. ShellT2 == 3) Xi(i,k) = socfac_atom_f*zz*result       
-              ELSE IF (ShellT1 == 1 .and. ShellT2 == 1) THEN
+                  IF (ShellT1 == 1 .and. (ShellC1 == 0 .or. ShellC1 == 1) .and. ShellT2 == 1 .and. (ShellC2 == 0 .or. ShellC2 == 1)) Xi(i,k) = socfac_atom_p*zz*result       
+                  IF (ShellT1 == 2 .and. ShellC1 == 2 .and. ShellT2 == 2 .and. ShellC2 == 2) Xi(i,k) = socfac_atom_d*zz*result       
+                  IF (ShellT1 == 3 .and. ShellC1 == 2 .and. ShellT2 == 3 .and. ShellC2 == 2) Xi(i,k) = socfac_atom_f*zz*result       
+              ELSE IF (ShellT1 == 1 .and. (ShellC1 == 0 .or. ShellC1 == 1) .and. ShellT2 == 1 .and. (ShellC2 == 0 .or. ShellC2 == 1)) THEN
                   Xi(i,k) = soc_cff_p_atom
-              ELSE IF (ShellT1 == 2 .and. ShellT2 == 2) THEN                
+              ELSE IF (ShellT1 == 2 .and. ShellC1 == 2 .and. ShellT2 == 2 .and. ShellC2 == 2) THEN                
                   Xi(i,k) = soc_cff_d_atom
-              ELSE IF (ShellT1 == 3 .and. ShellT2 == 3) THEN 
+              ELSE IF (ShellT1 == 3 .and. ShellC1 == 2 .and. ShellT2 == 3 .and. ShellC2 == 2) THEN 
                   Xi(i,k) = soc_cff_f_atom
               ELSE 
                   Xi(i,k) = 0.0 
@@ -833,3 +849,4 @@ CONTAINS
   END SUBROUTINE CompHSO
  
 END MODULE SpinOrbit
+
